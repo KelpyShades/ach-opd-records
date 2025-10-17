@@ -77,6 +77,7 @@ export default function NHISTableView() {
     const [loading, setLoading] = useState(true)
     const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
     const [isSearching, setIsSearching] = useState(false)
+    const [availableYears, setAvailableYears] = useState<number[]>([])
 
     // Search states
     const [searchOPD, setSearchOPD] = useState('')
@@ -110,6 +111,130 @@ export default function NHISTableView() {
 
     useEffect(() => {
         fetchRecords()
+        fetchAvailableYears()
+
+        // Set up realtime subscription
+        const channel = supabase
+            .channel('records_nhis_changes', {
+                config: {
+                    broadcast: { self: true },
+                },
+            })
+            .on(
+                'postgres_changes',
+                {
+                    event: '*', // Listen to all events (INSERT, UPDATE, DELETE)
+                    schema: 'public',
+                    table: 'records_nhis',
+                },
+                (payload) => {
+
+                    if (payload.eventType === 'INSERT') {
+                        const newRecord = payload.new as NHISRecord
+                        console.log('📥 Adding new record to view:', newRecord)
+
+                        // Add new record at the top, maintain 100 limit
+                        setRecords((prev) => {
+                            const updated = [newRecord, ...prev].slice(0, 100)
+                            console.log(
+                                '📊 Records after INSERT:',
+                                updated.length,
+                                'records'
+                            )
+                            return updated
+                        })
+                        setFilteredRecords((prev) =>
+                            [newRecord, ...prev].slice(0, 100)
+                        )
+                    } else if (payload.eventType === 'UPDATE') {
+                        const updatedRecord = payload.new as NHISRecord
+                        console.log(
+                            '✏️ Updating record in view:',
+                            updatedRecord
+                        )
+
+                        // Only update if the record is currently in our view
+                        setRecords((prev) => {
+                            const recordExists = prev.some(
+                                (r) => r.id === updatedRecord.id
+                            )
+                            if (recordExists) {
+                                const updated = prev.map((record) =>
+                                    record.id === updatedRecord.id
+                                        ? updatedRecord
+                                        : record
+                                )
+                                console.log('✅ Record updated in view')
+                                return updated
+                            }
+                            console.log(
+                                '⏭️ Record not in current view, skipping'
+                            )
+                            return prev
+                        })
+                        setFilteredRecords((prev) => {
+                            const recordExists = prev.some(
+                                (r) => r.id === updatedRecord.id
+                            )
+                            if (recordExists) {
+                                return prev.map((record) =>
+                                    record.id === updatedRecord.id
+                                        ? updatedRecord
+                                        : record
+                                )
+                            }
+                            return prev
+                        })
+                    } else if (payload.eventType === 'DELETE') {
+                        const deletedRecord = payload.old as NHISRecord
+                        console.log(
+                            '🗑️ Removing record from view:',
+                            deletedRecord.id
+                        )
+
+                        // Remove if it exists in current view
+                        setRecords((prev) => {
+                            const updated = prev.filter(
+                                (record) => record.id !== deletedRecord.id
+                            )
+                            console.log(
+                                '📊 Records after DELETE:',
+                                updated.length,
+                                'records'
+                            )
+                            return updated
+                        })
+                        setFilteredRecords((prev) =>
+                            prev.filter(
+                                (record) => record.id !== deletedRecord.id
+                            )
+                        )
+                        setSelectedRows((prev) => {
+                            const newSet = new Set(prev)
+                            newSet.delete(deletedRecord.id)
+                            return newSet
+                        })
+                    }
+                }
+            )
+            .subscribe((status) => {
+                console.log('📡 Realtime subscription status:', status)
+                if (status === 'SUBSCRIBED') {
+                    console.log(
+                        '✅ Successfully subscribed to realtime changes'
+                    )
+                } else if (status === 'CHANNEL_ERROR') {
+                    console.error('❌ Realtime channel error')
+                } else if (status === 'TIMED_OUT') {
+                    console.error('❌ Realtime subscription timed out')
+                }
+            })
+
+        // Cleanup subscription on unmount
+        return () => {
+            console.log('🔌 Unsubscribing from realtime')
+            supabase.removeChannel(channel)
+        }
     }, [])
 
     // Auto-trigger search when debounced values or date filters change
@@ -137,6 +262,33 @@ export default function NHISTableView() {
         filterMonth,
         filterDate,
     ])
+
+    const fetchAvailableYears = useCallback(async () => {
+        try {
+            const { data, error } = await supabase
+                .from('records_nhis')
+                .select('created_at')
+                .order('created_at', { ascending: false })
+
+            if (error) {
+                console.error('Error fetching years:', error)
+                return
+            }
+
+            // Extract unique years from all records
+            const years = Array.from(
+                new Set(
+                    (data || []).map((r) =>
+                        new Date(r.created_at).getFullYear()
+                    )
+                )
+            ).sort((a, b) => b - a)
+
+            setAvailableYears(years)
+        } catch (error) {
+            console.error('Error fetching years:', error)
+        }
+    }, [])
 
     const fetchRecords = useCallback(
         async (serverSearch = false) => {
@@ -270,7 +422,6 @@ export default function NHISTableView() {
 
             toast.success('Record updated successfully!')
             setEditDialog(false)
-            fetchRecords()
         } catch (error) {
             console.error('Error updating record:', error)
             toast.error('An unexpected error occurred')
@@ -299,16 +450,11 @@ export default function NHISTableView() {
             )
             setDeleteDialog(false)
             setSelectedRows(new Set())
-            fetchRecords()
         } catch (error) {
             console.error('Error deleting records:', error)
             toast.error('An unexpected error occurred')
         }
     }
-
-    const years = Array.from(
-        new Set(records.map((r) => new Date(r.created_at).getFullYear()))
-    ).sort((a, b) => b - a)
 
     const months = [
         { value: '1', label: 'January' },
@@ -456,7 +602,7 @@ export default function NHISTableView() {
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="all">All Years</SelectItem>
-                                {years.map((year) => (
+                                {availableYears.map((year) => (
                                     <SelectItem
                                         key={year}
                                         value={year.toString()}
@@ -502,7 +648,10 @@ export default function NHISTableView() {
                                     mode="single"
                                     selected={filterDate}
                                     onSelect={setFilterDate}
-                                    initialFocus
+                                    autoFocus={true}
+                                    captionLayout="dropdown"
+                                    fromYear={2000}
+                                    toYear={new Date().getFullYear()}
                                 />
                             </PopoverContent>
                         </Popover>
@@ -529,7 +678,7 @@ export default function NHISTableView() {
                         ) : (
                             // <div className="overflow-auto ">
                             <Table>
-                                <TableHeader className="sticky z-10 top-0 bg-white shadow-sm">
+                                <TableHeader className="sticky top-0 z-10 bg-white shadow-sm">
                                     <TableRow>
                                         <TableHead className="w-12">
                                             <Checkbox
