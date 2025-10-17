@@ -7,7 +7,8 @@ import { toast } from 'sonner'
 import Sidebar from '@/app/home/components/Sidebar'
 import NHISTableView from '@/app/home/components/NHISTableView'
 import NHISInsertView from '@/app/home/components/NHISInsertView'
-import PrivateInsuranceView from '@/app/home/components/PrivateInsuranceView'
+import PvtTableView from './components/PvtTableView'
+import PvtInsertView from './components/PvtInsertView'
 
 interface User {
     id: string
@@ -96,7 +97,12 @@ export default function HomePage() {
                 {activeSection === 'nhis' && activeView === 'insert' && (
                     <NHISInsertView />
                 )}
-                {activeSection === 'private' && <PrivateInsuranceView />}
+                {activeSection === 'private' && activeView === 'table' && (
+                    <PvtTableView />
+                )}
+                {activeSection === 'private' && activeView === 'insert' && (
+                    <PvtInsertView />
+                )}
             </main>
         </div>
     )
